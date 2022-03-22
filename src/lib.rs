@@ -8,11 +8,20 @@ use std::{
 type Constructor = Rc<dyn for<'r> Fn(&'r mut Container) -> Box<dyn Any>>;
 
 #[derive(Default)]
-pub struct Container {
+pub struct Container<'parent> {
+    parent: Option<&'parent mut Container<'parent>>,
     constructors: BTreeMap<TypeId, Constructor>,
 }
 
-impl Container {
+impl<'parent> Container<'parent> {
+    /// Create a new `Container` that delegates `resolve` calls to the `parent` when it cannot be satisfied.
+    pub fn with_parent(parent: &'parent mut Container<'parent>) -> Self {
+        Self {
+            parent: Some(parent),
+            constructors: Default::default(),
+        }
+    }
+
     /// Register the `value` for the type `T` to be cloned upon `calling `resolve`.
     pub fn register_clone<T: Clone + 'static>(&mut self, value: T) {
         let value = Box::new(value);
@@ -44,9 +53,17 @@ impl Container {
 
     /// Get a value of the given type.
     pub fn resolve<T: 'static>(&mut self) -> Option<T> {
-        let constructor = self.constructors.get(&TypeId::of::<T>()).cloned()?;
-        let value = (constructor)(self).downcast::<T>().ok()?;
-        Some(*value)
+        match self.constructors.get(&TypeId::of::<T>()).cloned() {
+            Some(constructor) => {
+                let value = (constructor)(self).downcast::<T>().ok()?;
+                Some(*value)
+            }
+            None => if let Some(parent) = &mut self.parent {
+                parent.resolve()
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -147,6 +164,18 @@ mod tests {
         let boss: Rc<Boss> = container.resolve().unwrap();
     
         player.jump();
+        boss.hit();
+    }
+
+    #[test]
+    fn test3() {
+        let mut parent_container = Container::default();
+        parent_container.register_singleton_as_rc::<Logger>();
+
+        let mut child_container = Container::with_parent(&mut parent_container);
+        child_container.register_construct::<Boss>();
+
+        let boss: Boss = child_container.resolve().unwrap();
         boss.hit();
     }
 }
