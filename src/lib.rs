@@ -1,9 +1,4 @@
-use std::{
-    any::{Any, TypeId},
-    cell::RefCell,
-    collections::BTreeMap,
-    rc::Rc,
-};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::BTreeMap, rc::Rc, sync::{Arc, Mutex}};
 
 pub trait FindConstructor {
     fn find_constructor(&self, type_id: &TypeId) -> Option<Constructor>;
@@ -99,6 +94,20 @@ pub trait Construct {
     fn construct(locator: &mut ServiceLocator) -> Self;
 }
 
+macro_rules! impl_delegate_construct {
+    ($($type:ty),*) => {
+        $(
+            impl<T: Construct> Construct for $type {
+                fn construct(locator: &mut ServiceLocator) -> Self {
+                    <$type>::new(T::construct(locator))
+                }
+            }
+        )*
+    };
+}
+
+impl_delegate_construct!(Rc<T>, Arc<T>, RefCell<T>, Mutex<T>);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +177,10 @@ mod tests {
         fn hit(&self) {
             self.logger.log("Boss was hit.");
         }
+
+        fn fire(&mut self) {
+            self.logger.log("Boss fired.");
+        }
     }
 
     impl Construct for Boss {
@@ -217,5 +230,25 @@ mod tests {
 
         let boss: Boss = child_locator.resolve().unwrap();
         boss.hit();
+    }
+
+    #[test]
+    fn test5() {
+        let mut locator = ServiceLocator::default();
+        locator.register_singleton_as_rc::<Logger>();
+        locator.register_construct::<Rc<RefCell<Boss>>>();
+
+        let boss: Rc<RefCell<Boss>> = locator.resolve().unwrap();
+        boss.borrow_mut().fire();
+    }
+
+    #[test]
+    fn test6() {
+        let mut locator = ServiceLocator::default();
+        locator.register_singleton_as_rc::<Logger>();
+        locator.register_construct::<Arc<Mutex<Boss>>>();
+
+        let boss: Arc<Mutex<Boss>> = locator.resolve().unwrap();
+        boss.lock().unwrap().fire();
     }
 }
