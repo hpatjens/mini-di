@@ -1,4 +1,4 @@
-use std::{any::{Any, TypeId}, cell::RefCell, collections::BTreeMap, rc::Rc, sync::{Arc, Mutex}};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::BTreeMap, ops::Deref, rc::Rc, sync::{Arc, Mutex}};
 
 pub trait GetConstructor {
     fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor>;
@@ -28,46 +28,40 @@ pub trait Register {
     fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self);
 }
 
-pub struct BorrowContainer<'parent> {
-    parent: &'parent Container,
-    container: Container,
-}
-
-impl Register for BorrowContainer<'_> {
-    fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
-        self.container.register_clone(value);
-    }
-
-    fn register_construct<T: Construct + 'static>(&mut self) {
-        self.container.register_construct::<T>();
-    }
-
-    fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self) {
-        self.container.register_singleton_as_rc::<T>();
+impl GetConstructor for () {
+    fn get_constructor(&self, _type_id: &TypeId) -> Option<Constructor> {
+        None
     }
 }
 
-impl GetConstructor for BorrowContainer<'_> {
+impl<G: GetConstructor> GetConstructor for Arc<G> {
     fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
-        self.container.get_constructor(type_id).or_else(|| self.parent.get_constructor(type_id))
+        self.deref().get_constructor(type_id)
     }
 }
 
-#[derive(Default)]
-pub struct Container {
+pub struct Container<P: GetConstructor = ()> {
+    parent: P,
     constructors: BTreeMap<TypeId, Constructor>,
 }
 
 impl Container {
-    pub fn with_parent(parent: &Container) -> BorrowContainer {
-        BorrowContainer {
+    pub fn new() -> Self {
+        Self {
+            parent: (),
+            constructors: Default::default(),
+        }
+    }
+
+    pub fn with_parent<P: GetConstructor>(parent: P) -> Container<P> {
+        Container {
             parent,
-            container: Container::default(),
+            constructors: Default::default(),
         }
     }
 }
 
-impl Register for Container {
+impl<P: GetConstructor> Register for Container<P> {
     fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
         let value = Box::new(value);
         let constructor = Arc::new(move |_: &Resolver| value.clone() as Box<dyn Any>);
@@ -95,9 +89,15 @@ impl Register for Container {
     }
 }
 
-impl GetConstructor for Container {
+impl<P: GetConstructor> GetConstructor for Container<P> {
     fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
-        self.constructors.get(type_id).cloned()
+        self.constructors.get(type_id).cloned().or(self.parent.get_constructor(type_id))
+    }
+}
+
+impl<P: GetConstructor> GetConstructor for &Container<P> {
+    fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
+        self.constructors.get(type_id).cloned().or(self.parent.get_constructor(type_id))
     }
 }
 
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test2() {
-        let mut locator = Container::default();
+        let mut locator = Container::new();
         locator.register_clone::<Arc<dyn AudioManager>>(Arc::new(TestAudioManager));
         locator.register_construct::<Player>();
         locator.register_singleton_as_rc::<Logger>();
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test3() {
-        let mut parent_locator = Container::default();
+        let mut parent_locator = Container::new();
         parent_locator.register_singleton_as_rc::<Logger>();
 
         let mut child_locator = Container::with_parent(&parent_locator);
@@ -237,22 +237,22 @@ mod tests {
 
     #[test]
     fn test4() {
-        // let mut child_locator = ServiceLocator::with_parent(Parent::Owned({
-        //     let mut parent_locator = ServiceLocator::default();
-        //     parent_locator.register_singleton_as_rc::<Logger>();
-        //     Box::new(parent_locator)
-        // }));
-        // child_locator.register_construct::<Boss>();
+        let mut child_locator = Container::with_parent({
+            let mut parent_locator = Container::new();
+            parent_locator.register_singleton_as_rc::<Logger>();
+            Arc::new(parent_locator)
+        });
+        child_locator.register_construct::<Boss>();
 
-        // let child_resolver = Resolver(&child_locator);
+        let child_resolver = Resolver(&child_locator);
 
-        // let boss: Boss = child_resolver.resolve().unwrap();
-        // boss.hit();
+        let boss: Boss = child_resolver.resolve().unwrap();
+        boss.hit();
     }
 
     #[test]
     fn test5() {
-        let mut locator = Container::default();
+        let mut locator = Container::new();
         locator.register_singleton_as_rc::<Logger>();
         locator.register_construct::<Rc<RefCell<Boss>>>();
 
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn test6() {
-        let mut locator = Container::default();
+        let mut locator = Container::new();
         locator.register_singleton_as_rc::<Logger>();
         locator.register_construct::<Arc<Mutex<Boss>>>();
 
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test7() {
-        let mut locator = Container::default();
+        let mut locator = Container::new();
         locator.register_construct::<Arc<Mutex<Boss>>>();
         let locator = locator;
 
