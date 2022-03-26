@@ -1,15 +1,15 @@
 use std::{any::{Any, TypeId}, cell::RefCell, collections::BTreeMap, rc::Rc, sync::{Arc, Mutex}};
 
-pub trait FindConstructor {
-    fn find_constructor(&self, type_id: &TypeId) -> Option<Constructor>;
+pub trait GetConstructor {
+    fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor>;
 }
 
-type Constructor = Arc<dyn for<'r> Fn(&'r ServiceLocator) -> Box<dyn Any> + Send + Sync> ;
+type Constructor = Arc<dyn for<'r> Fn(&'r Resolver<'r>) -> Box<dyn Any> + Send + Sync> ;
 
 pub enum Parent<'parent> {
     None,
-    Borrowed(&'parent dyn FindConstructor),
-    Owned(Box<dyn FindConstructor>),
+    Borrowed(&'parent dyn GetConstructor),
+    Owned(Box<dyn GetConstructor>),
 }
 
 impl<'parent> Default for Parent<'parent> {
@@ -18,22 +18,39 @@ impl<'parent> Default for Parent<'parent> {
     }
 }
 
+pub struct Resolver<'r>(&'r dyn GetConstructor);
+
+impl<'r> Resolver<'r> {
+    pub fn resolve<T: 'static>(&self) -> Option<T> {
+        self.0
+            .get_constructor(&TypeId::of::<T>())
+            .and_then(|constructor| (constructor)(self).downcast::<T>().ok())
+            .map(|value| *value)
+    }
+}
+
 #[derive(Default)]
-pub struct ServiceLocator {
+pub struct Container {
     constructors: BTreeMap<TypeId, Constructor>,
 }
 
-impl ServiceLocator {
+impl GetConstructor for Container {
+    fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
+        self.constructors.get(type_id).cloned()
+    }
+}
+
+impl Container {
     /// Register the `value` for the type `T` to be cloned upon `calling `resolve`.
     pub fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
         let value = Box::new(value);
-        let constructor = Arc::new(move |_: &ServiceLocator| value.clone() as Box<dyn Any>);
+        let constructor = Arc::new(move |_: &Resolver| value.clone() as Box<dyn Any>);
         self.constructors.insert(TypeId::of::<T>(), constructor);
     }
 
     /// Register the type `T` to be constructed on every call of `resolve`.
     pub fn register_construct<T: Construct + 'static>(&mut self) {
-        let constructor = Arc::new(move |locator: &ServiceLocator| {
+        let constructor = Arc::new(move |locator: &Resolver| {
             Box::new(T::construct(locator)) as Box<dyn Any>
         });
         self.constructors.insert(TypeId::of::<T>(), constructor);
@@ -42,7 +59,7 @@ impl ServiceLocator {
     // Register the type `T` to be constructed when it is needed and an `Rc` is given out upon calling `resolve`.
     pub fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self) {
         let singleton: Mutex<Option<Arc<T>>> = Mutex::new(None);
-        let constructor = Arc::new(move |locator: &ServiceLocator| {
+        let constructor = Arc::new(move |locator: &Resolver| {
             if let Some(rc) = &*singleton.lock().unwrap() {
                 return Box::new(rc.clone()) as Box<dyn Any>;
             }
@@ -52,25 +69,18 @@ impl ServiceLocator {
         });
         self.constructors.insert(TypeId::of::<Arc<T>>(), constructor);
     }
-
-    /// Get a value of the given type.
-    pub fn resolve<T: 'static>(&self) -> Option<T> {
-        self.constructors.get(&TypeId::of::<T>()).cloned()
-            .and_then(|constructor| (constructor)(self).downcast::<T>().ok())
-            .map(|value| *value)
-    }
 }
 
 /// Used to create aa value of type `Self` from the `ServiceLocator`.
 pub trait Construct {
-    fn construct(locator: &ServiceLocator) -> Self;
+    fn construct(locator: &Resolver) -> Self;
 }
 
 macro_rules! impl_delegate_construct {
     ($($type:ty),*) => {
         $(
             impl<T: Construct> Construct for $type {
-                fn construct(locator: &ServiceLocator) -> Self {
+                fn construct(locator: &Resolver) -> Self {
                     <$type>::new(T::construct(locator))
                 }
             }
@@ -95,7 +105,7 @@ mod tests {
         }
     }
     impl Construct for ProductionAudioManager {
-        fn construct(_: &ServiceLocator) -> Self {
+        fn construct(_: &Resolver) -> Self {
             Self
         }
     }
@@ -107,7 +117,7 @@ mod tests {
         }
     }
     impl Construct for TestAudioManager {
-        fn construct(_: &ServiceLocator) -> Self {
+        fn construct(_: &Resolver) -> Self {
             Self
         }
     }
@@ -119,7 +129,7 @@ mod tests {
         }
     }
     impl Construct for Logger {
-        fn construct(_locator: &ServiceLocator) -> Self {
+        fn construct(_locator: &Resolver) -> Self {
             Self
         }
     }
@@ -135,7 +145,7 @@ mod tests {
     }
 
     impl Construct for Player {
-        fn construct(locator: &ServiceLocator) -> Self {
+        fn construct(locator: &Resolver) -> Self {
             Self {
                 audio_manager: locator.resolve().unwrap(),
             }
@@ -156,7 +166,7 @@ mod tests {
     }
 
     impl Construct for Boss {
-        fn construct(locator: &ServiceLocator) -> Self {
+        fn construct(locator: &Resolver) -> Self {
             Self {
                 logger: locator.resolve().unwrap(),
             }
@@ -165,15 +175,17 @@ mod tests {
 
     #[test]
     fn test2() {
-        let mut locator = ServiceLocator::default();
+        let mut locator = Container::default();
         locator.register_clone::<Arc<dyn AudioManager>>(Arc::new(TestAudioManager));
         locator.register_construct::<Player>();
         locator.register_singleton_as_rc::<Logger>();
         locator.register_singleton_as_rc::<Boss>();
 
-        let _audio_manager: Arc<dyn AudioManager> = locator.resolve().unwrap();
-        let player: Player = locator.resolve().unwrap();
-        let boss: Arc<Boss> = locator.resolve().unwrap();
+        let resolver = Resolver(&locator);
+        
+        let _audio_manager: Arc<dyn AudioManager> = resolver.resolve().unwrap();
+        let player: Player = resolver.resolve().unwrap();
+        let boss: Arc<Boss> = resolver.resolve().unwrap();
 
         player.jump();
         boss.hit();
@@ -181,35 +193,40 @@ mod tests {
 
     #[test]
     fn test5() {
-        let mut locator = ServiceLocator::default();
+        let mut locator = Container::default();
         locator.register_singleton_as_rc::<Logger>();
         locator.register_construct::<Rc<RefCell<Boss>>>();
 
-        let boss: Rc<RefCell<Boss>> = locator.resolve().unwrap();
+        let resolver = Resolver(&locator);
+
+        let boss: Rc<RefCell<Boss>> = resolver.resolve().unwrap();
         boss.borrow_mut().fire();
     }
 
     #[test]
     fn test6() {
-        let mut locator = ServiceLocator::default();
+        let mut locator = Container::default();
         locator.register_singleton_as_rc::<Logger>();
         locator.register_construct::<Arc<Mutex<Boss>>>();
-        let locator = Arc::new(locator);
 
-        let boss: Arc<Mutex<Boss>> = locator.resolve().unwrap();
+        let resolver = Resolver(&locator);
+
+        let boss: Arc<Mutex<Boss>> = resolver.resolve().unwrap();
         boss.lock().unwrap().fire();
     }
 
     #[test]
     fn test7() {
-        let mut locator = ServiceLocator::default();
+        let mut locator = Container::default();
         locator.register_construct::<Arc<Mutex<Boss>>>();
         let locator = locator;
 
         let locator = Arc::new(Mutex::new(locator));
 
         std::thread::spawn(move || {
-            let boss: Arc<Mutex<Boss>> = locator.lock().unwrap().resolve().unwrap();
+            let locator = locator.lock().unwrap();
+            let resolver = Resolver(&*locator);
+            let _boss: Arc<Mutex<Boss>> = resolver.resolve().unwrap();
         });
     }
 }
