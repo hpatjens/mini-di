@@ -6,18 +6,6 @@ pub trait GetConstructor {
 
 type Constructor = Arc<dyn for<'r> Fn(&'r Resolver<'r>) -> Box<dyn Any> + Send + Sync> ;
 
-pub enum Parent<'parent> {
-    None,
-    Borrowed(&'parent dyn GetConstructor),
-    Owned(Box<dyn GetConstructor>),
-}
-
-impl<'parent> Default for Parent<'parent> {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
 pub struct Resolver<'r>(&'r dyn GetConstructor);
 
 impl<'r> Resolver<'r> {
@@ -29,35 +17,71 @@ impl<'r> Resolver<'r> {
     }
 }
 
+pub trait Register {
+    /// Register the `value` for the type `T` to be cloned upon `calling `resolve`.
+    fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T);
+
+    /// Register the type `T` to be constructed on every call of `resolve`.
+    fn register_construct<T: Construct + 'static>(&mut self);
+
+    // Register the type `T` to be constructed when it is needed and an `Rc` is given out upon calling `resolve`.
+    fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self);
+}
+
+pub struct BorrowContainer<'parent> {
+    parent: &'parent Container,
+    container: Container,
+}
+
+impl Register for BorrowContainer<'_> {
+    fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
+        self.container.register_clone(value);
+    }
+
+    fn register_construct<T: Construct + 'static>(&mut self) {
+        self.container.register_construct::<T>();
+    }
+
+    fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self) {
+        self.container.register_singleton_as_rc::<T>();
+    }
+}
+
+impl GetConstructor for BorrowContainer<'_> {
+    fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
+        self.container.get_constructor(type_id).or_else(|| self.parent.get_constructor(type_id))
+    }
+}
+
 #[derive(Default)]
 pub struct Container {
     constructors: BTreeMap<TypeId, Constructor>,
 }
 
-impl GetConstructor for Container {
-    fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
-        self.constructors.get(type_id).cloned()
+impl Container {
+    pub fn with_parent(parent: &Container) -> BorrowContainer {
+        BorrowContainer {
+            parent,
+            container: Container::default(),
+        }
     }
 }
 
-impl Container {
-    /// Register the `value` for the type `T` to be cloned upon `calling `resolve`.
-    pub fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
+impl Register for Container {
+    fn register_clone<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
         let value = Box::new(value);
         let constructor = Arc::new(move |_: &Resolver| value.clone() as Box<dyn Any>);
         self.constructors.insert(TypeId::of::<T>(), constructor);
     }
 
-    /// Register the type `T` to be constructed on every call of `resolve`.
-    pub fn register_construct<T: Construct + 'static>(&mut self) {
+    fn register_construct<T: Construct + 'static>(&mut self) {
         let constructor = Arc::new(move |locator: &Resolver| {
             Box::new(T::construct(locator)) as Box<dyn Any>
         });
         self.constructors.insert(TypeId::of::<T>(), constructor);
     }
 
-    // Register the type `T` to be constructed when it is needed and an `Rc` is given out upon calling `resolve`.
-    pub fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self) {
+    fn register_singleton_as_rc<T: Construct + Send + Sync + 'static>(&mut self) {
         let singleton: Mutex<Option<Arc<T>>> = Mutex::new(None);
         let constructor = Arc::new(move |locator: &Resolver| {
             if let Some(rc) = &*singleton.lock().unwrap() {
@@ -68,6 +92,12 @@ impl Container {
             Box::new(value) as Box<dyn Any>
         });
         self.constructors.insert(TypeId::of::<Arc<T>>(), constructor);
+    }
+}
+
+impl GetConstructor for Container {
+    fn get_constructor(&self, type_id: &TypeId) -> Option<Constructor> {
+        self.constructors.get(type_id).cloned()
     }
 }
 
@@ -189,6 +219,35 @@ mod tests {
 
         player.jump();
         boss.hit();
+    }
+
+    #[test]
+    fn test3() {
+        let mut parent_locator = Container::default();
+        parent_locator.register_singleton_as_rc::<Logger>();
+
+        let mut child_locator = Container::with_parent(&parent_locator);
+        child_locator.register_construct::<Boss>();
+
+        let child_resolver = Resolver(&child_locator);
+
+        let boss: Boss = child_resolver.resolve().unwrap();
+        boss.hit();
+    }
+
+    #[test]
+    fn test4() {
+        // let mut child_locator = ServiceLocator::with_parent(Parent::Owned({
+        //     let mut parent_locator = ServiceLocator::default();
+        //     parent_locator.register_singleton_as_rc::<Logger>();
+        //     Box::new(parent_locator)
+        // }));
+        // child_locator.register_construct::<Boss>();
+
+        // let child_resolver = Resolver(&child_locator);
+
+        // let boss: Boss = child_resolver.resolve().unwrap();
+        // boss.hit();
     }
 
     #[test]
