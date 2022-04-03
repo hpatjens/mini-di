@@ -21,6 +21,12 @@ impl ConstructAs for Rc<TestAudioManager> {
         <Rc<TestAudioManager> as Construct>::construct(locator)
     }
 }
+impl ConstructAs for Arc<TestAudioManager> {
+    type Target = Arc<dyn AudioManager>;
+    fn construct_as(locator: &Resolver) -> Self::Target {
+        <Arc<TestAudioManager> as Construct>::construct(locator)
+    }
+}
 
 struct TestAudioManager;
 impl AudioManager for TestAudioManager {
@@ -124,15 +130,56 @@ fn when_construct() {
 }
 
 #[test]
-fn test2() {
+fn when_singleton_construct_it() {
+    let mut container = Container::new();
+    container
+        .when::<Arc<TestAudioManager>>()
+        .singleton()
+        .construct_it()
+        .unwrap();
+    let _value: Arc<TestAudioManager> = container.as_resolver().resolve().unwrap();
+}
+
+#[test]
+fn when_singleton_construct_with() {
+    let mut container = Container::new();
+    container
+        .when::<Arc<TestAudioManager>>()
+        .singleton()
+        .construct_with(|locator| Arc::new(TestAudioManager::construct(locator)))
+        .unwrap();
+    let _value: Arc<TestAudioManager> = container.as_resolver().resolve().unwrap();
+}
+
+#[test]
+fn when_singleton_construct() {
+    let mut container = Container::new();
+    container
+        .when::<Arc<dyn AudioManager>>()
+        .singleton()
+        .construct::<Arc<TestAudioManager>>()
+        .unwrap();
+    let _value: Arc<dyn AudioManager> = container.as_resolver().resolve().unwrap();
+}
+
+#[test]
+fn many1() {
     let mut locator = Container::new();
     locator
         .when::<Arc<dyn AudioManager>>()
         .clone(Arc::new(TestAudioManager))
         .unwrap();
     locator.when::<Player>().construct_it().unwrap();
-    locator.register_singleton::<Logger>().unwrap();
-    locator.register_singleton::<Boss>().unwrap();
+    locator
+        .when::<Arc<Logger>>()
+        .singleton()
+        .construct_it()
+        .unwrap();
+    locator
+        .when::<Arc<Boss>>()
+        .singleton()
+        .construct_it()
+        .unwrap();
 
     let resolver = locator.as_resolver();
 
@@ -145,9 +192,13 @@ fn test2() {
 }
 
 #[test]
-fn test3() {
+fn parent_container_by_ref() {
     let mut parent_locator = Container::new();
-    parent_locator.register_singleton::<Logger>().unwrap();
+    parent_locator
+        .when::<Arc<Logger>>()
+        .singleton()
+        .construct_it()
+        .unwrap();
 
     let mut child_locator = Container::with_parent(&parent_locator);
     child_locator.when::<Boss>().construct_it().unwrap();
@@ -159,10 +210,14 @@ fn test3() {
 }
 
 #[test]
-fn test4() {
+fn parent_container_owned() {
     let mut child_locator = Container::with_parent({
         let mut parent_locator = Container::new();
-        parent_locator.register_singleton::<Logger>().unwrap();
+        parent_locator
+            .when::<Arc<Logger>>()
+            .singleton()
+            .construct_it()
+            .unwrap();
         Arc::new(parent_locator)
     });
     child_locator.when::<Boss>().construct_it().unwrap();
@@ -174,9 +229,13 @@ fn test4() {
 }
 
 #[test]
-fn test5() {
+fn refcell() {
     let mut locator = Container::new();
-    locator.register_singleton::<Logger>().unwrap();
+    locator
+        .when::<Arc<Logger>>()
+        .singleton()
+        .construct_it()
+        .unwrap();
     locator.when::<Rc<RefCell<Boss>>>().construct_it().unwrap();
 
     let resolver = locator.as_resolver();
@@ -186,9 +245,13 @@ fn test5() {
 }
 
 #[test]
-fn test6() {
+fn mutex() {
     let mut locator = Container::new();
-    locator.register_singleton::<Logger>().unwrap();
+    locator
+        .when::<Arc<Logger>>()
+        .singleton()
+        .construct_it()
+        .unwrap();
     locator.when::<Arc<Mutex<Boss>>>().construct_it().unwrap();
 
     let resolver = locator.as_resolver();
@@ -198,7 +261,7 @@ fn test6() {
 }
 
 #[test]
-fn test7() {
+fn threads() {
     let mut locator = Container::new();
     locator.when::<Arc<Mutex<Boss>>>().construct_it().unwrap();
     let locator = locator;

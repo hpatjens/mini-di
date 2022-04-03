@@ -104,6 +104,72 @@ where
     }
 }
 
+impl<'container, R, P> Registration<'container, Arc<R>, P>
+where
+    R: 'static + ?Sized,
+    P: GetConstructor,
+{
+    pub fn singleton(self) -> Singleton<'container, Arc<R>, P> {
+        Singleton {
+            container: self.container,
+            phantom: self._phantom,
+        }
+    }
+}
+
+pub struct Singleton<'container, R, P>
+where
+    P: GetConstructor,
+{
+    container: &'container mut Container<P>,
+    phantom: PhantomData<R>,
+}
+
+impl<'container, R, P> Singleton<'container, Arc<R>, P>
+where
+    R: 'static + Construct + Send + Sync,
+    P: GetConstructor,
+{
+    pub fn construct_it(self) -> Result<()> {
+        self.construct_with(|locator| Arc::new(R::construct(locator)))
+    }
+}
+
+impl<'container, R, P> Singleton<'container, Arc<R>, P>
+where
+    R: 'static + Send + Sync + ?Sized,
+    P: GetConstructor,
+{
+    pub fn construct<E>(self) -> Result<()>
+    where
+        E: 'static + ConstructAs<Target = Arc<R>> + Send + Sync,
+    {
+        self.construct_with(|locator| E::construct_as(locator))
+    }
+}
+
+impl<'container, R, P> Singleton<'container, Arc<R>, P>
+where
+    R: 'static + Send + Sync + ?Sized,
+    P: GetConstructor,
+{
+    pub fn construct_with<F>(self, constructor: F) -> Result<()>
+    where
+        F: Fn(&Resolver) -> Arc<R> + Send + Sync + 'static,
+    {
+        let singleton: Mutex<Option<Arc<R>>> = Mutex::new(None);
+        let constructor = Arc::new(move |locator: &Resolver| {
+            if let Some(arc) = &*singleton.lock().unwrap() {
+                return Box::new(arc.clone()) as Box<dyn Any>;
+            }
+            let value = constructor(locator);
+            *singleton.lock().unwrap() = Some(value.clone());
+            Box::new(value) as Box<dyn Any>
+        });
+        self.container.register_constructor::<Arc<R>>(constructor)
+    }
+}
+
 impl<P: GetConstructor> Container<P> {
     #[must_use]
     pub fn when<R>(&mut self) -> Registration<R, P> {
@@ -120,20 +186,6 @@ impl<P: GetConstructor> Container<P> {
         }
     }
 
-    // Register the type `T` to be constructed when it is needed and an `Rc` is given out upon calling `resolve`.
-    pub fn register_singleton<T: Construct + Send + Sync + 'static>(&mut self) -> Result<()> {
-        let singleton: Mutex<Option<Arc<T>>> = Mutex::new(None);
-        let constructor = Arc::new(move |locator: &Resolver| {
-            if let Some(arc) = &*singleton.lock().unwrap() {
-                return Box::new(arc.clone()) as Box<dyn Any>;
-            }
-            let value = Arc::new(T::construct(locator));
-            *singleton.lock().unwrap() = Some(value.clone());
-            Box::new(value) as Box<dyn Any>
-        });
-        self.register_constructor::<Arc<T>>(constructor)
-    }
-
     /// Get a `Resolver` that borrows the `Container`
     pub fn as_resolver(&self) -> Resolver {
         Resolver(self)
@@ -144,6 +196,7 @@ pub struct Resolver<'r>(&'r dyn GetConstructor);
 
 impl Resolver<'_> {
     pub fn resolve<T: 'static>(&self) -> Option<T> {
+        println!("resolve type: {:?}", TypeId::of::<T>());
         self.0
             .get_constructor(&TypeId::of::<T>())
             .and_then(|constructor| (constructor)(self).downcast::<T>().ok())
