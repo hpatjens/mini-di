@@ -1,4 +1,10 @@
-use crate::*;
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
+
+use crate::service_locator::*;
 
 trait AudioManager: Send + Sync {
     fn play(&self);
@@ -11,19 +17,19 @@ impl AudioManager for ProductionAudioManager {
     }
 }
 impl Construct for ProductionAudioManager {
-    fn construct(_: &Resolver) -> Self {
+    fn construct(_: &Locator) -> Self {
         Self
     }
 }
 impl ConstructAs for Rc<TestAudioManager> {
     type Target = Rc<dyn AudioManager>;
-    fn construct_as(locator: &Resolver) -> Self::Target {
+    fn construct_as(locator: &Locator) -> Self::Target {
         <Rc<TestAudioManager> as Construct>::construct(locator)
     }
 }
 impl ConstructAs for Arc<TestAudioManager> {
     type Target = Arc<dyn AudioManager>;
-    fn construct_as(locator: &Resolver) -> Self::Target {
+    fn construct_as(locator: &Locator) -> Self::Target {
         <Arc<TestAudioManager> as Construct>::construct(locator)
     }
 }
@@ -35,7 +41,7 @@ impl AudioManager for TestAudioManager {
     }
 }
 impl Construct for TestAudioManager {
-    fn construct(_: &Resolver) -> Self {
+    fn construct(_: &Locator) -> Self {
         Self
     }
 }
@@ -47,7 +53,7 @@ impl Logger {
     }
 }
 impl Construct for Logger {
-    fn construct(_locator: &Resolver) -> Self {
+    fn construct(_locator: &Locator) -> Self {
         Self
     }
 }
@@ -63,9 +69,9 @@ impl Player {
 }
 
 impl Construct for Player {
-    fn construct(locator: &Resolver) -> Self {
+    fn construct(locator: &Locator) -> Self {
         Self {
-            audio_manager: locator.resolve().unwrap(),
+            audio_manager: locator.locate().unwrap(),
         }
     }
 }
@@ -84,9 +90,9 @@ impl Boss {
 }
 
 impl Construct for Boss {
-    fn construct(locator: &Resolver) -> Self {
+    fn construct(locator: &Locator) -> Self {
         Self {
-            logger: locator.resolve().unwrap(),
+            logger: locator.locate().unwrap(),
         }
     }
 }
@@ -95,7 +101,7 @@ impl Construct for Boss {
 fn when_clone() {
     let mut container = Container::new();
     container.when::<u32>().clone(42).unwrap();
-    let value: u32 = container.as_resolver().resolve().unwrap();
+    let value: u32 = container.as_locator().locate().unwrap();
     assert_eq!(value, 42);
 }
 
@@ -106,7 +112,7 @@ fn when_construct_it() {
         .when::<Rc<TestAudioManager>>()
         .construct_it()
         .unwrap();
-    let _value: Rc<TestAudioManager> = container.as_resolver().resolve().unwrap();
+    let _value: Rc<TestAudioManager> = container.as_locator().locate().unwrap();
 }
 
 #[test]
@@ -116,7 +122,7 @@ fn when_construct_with() {
         .when::<Rc<dyn AudioManager>>()
         .construct_with(|resolver| <Rc<TestAudioManager> as Construct>::construct(resolver))
         .unwrap();
-    let _value: Rc<dyn AudioManager> = container.as_resolver().resolve().unwrap();
+    let _value: Rc<dyn AudioManager> = container.as_locator().locate().unwrap();
 }
 
 #[test]
@@ -126,7 +132,7 @@ fn when_construct() {
         .when::<Rc<dyn AudioManager>>()
         .construct::<Rc<TestAudioManager>>()
         .unwrap();
-    let _value: Rc<dyn AudioManager> = container.as_resolver().resolve().unwrap();
+    let _value: Rc<dyn AudioManager> = container.as_locator().locate().unwrap();
 }
 
 #[test]
@@ -137,7 +143,7 @@ fn when_singleton_construct_it() {
         .singleton()
         .construct_it()
         .unwrap();
-    let _value: Arc<TestAudioManager> = container.as_resolver().resolve().unwrap();
+    let _value: Arc<TestAudioManager> = container.as_locator().locate().unwrap();
 }
 
 #[test]
@@ -148,7 +154,7 @@ fn when_singleton_construct_with() {
         .singleton()
         .construct_with(|locator| Arc::new(TestAudioManager::construct(locator)))
         .unwrap();
-    let _value: Arc<TestAudioManager> = container.as_resolver().resolve().unwrap();
+    let _value: Arc<TestAudioManager> = container.as_locator().locate().unwrap();
 }
 
 #[test]
@@ -159,7 +165,7 @@ fn when_singleton_construct() {
         .singleton()
         .construct::<Arc<TestAudioManager>>()
         .unwrap();
-    let _value: Arc<dyn AudioManager> = container.as_resolver().resolve().unwrap();
+    let _value: Arc<dyn AudioManager> = container.as_locator().locate().unwrap();
 }
 
 #[test]
@@ -181,11 +187,11 @@ fn many1() {
         .construct_it()
         .unwrap();
 
-    let resolver = locator.as_resolver();
+    let resolver = locator.as_locator();
 
-    let _audio_manager: Arc<dyn AudioManager> = resolver.resolve().unwrap();
-    let player: Player = resolver.resolve().unwrap();
-    let boss: Arc<Boss> = resolver.resolve().unwrap();
+    let _audio_manager: Arc<dyn AudioManager> = resolver.locate().unwrap();
+    let player: Player = resolver.locate().unwrap();
+    let boss: Arc<Boss> = resolver.locate().unwrap();
 
     player.jump();
     boss.hit();
@@ -203,9 +209,9 @@ fn parent_container_by_ref() {
     let mut child_locator = Container::with_parent(&parent_locator);
     child_locator.when::<Boss>().construct_it().unwrap();
 
-    let child_resolver = child_locator.as_resolver();
+    let child_resolver = child_locator.as_locator();
 
-    let boss: Boss = child_resolver.resolve().unwrap();
+    let boss: Boss = child_resolver.locate().unwrap();
     boss.hit();
 }
 
@@ -222,9 +228,9 @@ fn parent_container_owned() {
     });
     child_locator.when::<Boss>().construct_it().unwrap();
 
-    let child_resolver = child_locator.as_resolver();
+    let child_resolver = child_locator.as_locator();
 
-    let boss: Boss = child_resolver.resolve().unwrap();
+    let boss: Boss = child_resolver.locate().unwrap();
     boss.hit();
 }
 
@@ -238,9 +244,9 @@ fn refcell() {
         .unwrap();
     locator.when::<Rc<RefCell<Boss>>>().construct_it().unwrap();
 
-    let resolver = locator.as_resolver();
+    let resolver = locator.as_locator();
 
-    let boss: Rc<RefCell<Boss>> = resolver.resolve().unwrap();
+    let boss: Rc<RefCell<Boss>> = resolver.locate().unwrap();
     boss.borrow_mut().fire();
 }
 
@@ -254,9 +260,9 @@ fn mutex() {
         .unwrap();
     locator.when::<Arc<Mutex<Boss>>>().construct_it().unwrap();
 
-    let resolver = locator.as_resolver();
+    let resolver = locator.as_locator();
 
-    let boss: Arc<Mutex<Boss>> = resolver.resolve().unwrap();
+    let boss: Arc<Mutex<Boss>> = resolver.locate().unwrap();
     boss.lock().unwrap().fire();
 }
 
@@ -270,7 +276,7 @@ fn threads() {
 
     std::thread::spawn(move || {
         let locator = locator.lock().unwrap();
-        let resolver = locator.as_resolver();
-        let _boss: Arc<Mutex<Boss>> = resolver.resolve().unwrap();
+        let resolver = locator.as_locator();
+        let _boss: Arc<Mutex<Boss>> = resolver.locate().unwrap();
     });
 }
